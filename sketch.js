@@ -134,6 +134,7 @@ let badfillRate = 50;
 let progress = 0;
 //bpm meter
 let angle = 0;
+let bpmFeedbackEnabled = true;   // true = show BPM meter/number/arrow on the play screen, false = hide it (set via the "only compressions" BPM-choice modal)
 let bpm = 0; 
 let bpmSum = 0;         // running total of every instantaneous BPM reading this session, for the average
 let bpmSampleCount = 0; // how many readings have gone into bpmSum
@@ -911,6 +912,9 @@ window.onload = () => {
     const practiceChoiceModal = document.getElementById("practiceChoiceModal");
     const newCaseBtn = document.getElementById("newCaseBtn");
     const onlyCompressionsBtn = document.getElementById("onlyCompressionsBtn");
+    const bpmChoiceModal = document.getElementById("bpmChoiceModal");
+    const withBpmBtn = document.getElementById("withBpmBtn");
+    const withoutBpmBtn = document.getElementById("withoutBpmBtn");
     const protocolCheckModal = document.getElementById("protocolCheckModal");
     const protocolYesBtn = document.getElementById("protocolYesBtn");
     const protocolNoBtn = document.getElementById("protocolNoBtn");
@@ -1637,6 +1641,7 @@ window.onload = () => {
         promisesealedraja.style.display = "none";
         promisesealedrani.style.display = "none";
         begin1.style.display = "flex";
+        bpmFeedbackEnabled = true; // full scenarios always show BPM feedback by default
         reset();
         dialDisplay.textContent = "995";
         dialDisplay.classList.add("empty");
@@ -1646,15 +1651,21 @@ window.onload = () => {
     newCaseBtn.onclick = handleNewCase;
     newCaseBtn.addEventListener('touchstart', handleNewCase);
 
+    // "Only compressions" no longer jumps straight in — it now asks
+    // whether the learner wants BPM feedback visible during the drill.
     const handleOnlyCompressions = () => {
         practiceChoiceModal.style.display = "none";
+        bpmChoiceModal.style.display = "flex";
+    };
+    bindTap(onlyCompressionsBtn, handleOnlyCompressions);
+
+    // Actually starts the compressions-only flow. `withBpm` controls
+    // whether the meter/number/arrow are drawn on the play screen.
+    const startOnlyCompressions = (withBpm) => {
+        bpmFeedbackEnabled = withBpm;
+        bpmChoiceModal.style.display = "none";
         promisesealedraja.style.display = "none";
         promisesealedrani.style.display = "none";
-        reset();
-        dialDisplay.textContent = "995";
-        dialDisplay.classList.add("empty");
-        callBtn.disabled = true;
-        callBtn.style.opacity = 0.5;
         userStartAudio();
         [t1, t2, tOkOk, tHmHm, cprStepTimer].forEach(t => clearTimeout(t));
         begin1.style.display = "none";
@@ -1665,9 +1676,16 @@ window.onload = () => {
         introAudio.currentTime = 0;
         cprC4aud.stop();
         cprBeginaud.play();
+        // cpr5 is already on screen by this point, so if anything below
+        // throws, the learner still sees CPR5 rather than a blank screen.
+        reset();
+        dialDisplay.textContent = "995";
+        dialDisplay.classList.add("empty");
+        callBtn.disabled = true;
+        callBtn.style.opacity = 0.5;
     };
-    onlyCompressionsBtn.onclick = handleOnlyCompressions;
-    onlyCompressionsBtn.addEventListener('touchstart', handleOnlyCompressions);
+    bindTap(withBpmBtn, () => startOnlyCompressions(true));
+    bindTap(withoutBpmBtn, () => startOnlyCompressions(false));
     // ========================================
     // CHECK PROGRESS BUTTON
     // ========================================
@@ -1958,30 +1976,43 @@ function mousePressed() {
     }
 }
 function playScreen() {
-    image(playimg, width / 2, height / 2);
-    //image(heartimg, width * 0.9, height * 0.08);
-    push();
-    noStroke();
-    fill("#EEEEEE");
-    rect(122, 44, 200, 11, 11);
-    pop();
-    push();
-    imageMode(CENTER);
-    image(meterimg, 78, 48);
-    pop();
-    push();
-    angleMode(RADIANS);
-    translate(20, 48);
-    rotate(-HALF_PI);
-    textAlign(CENTER, TOP);
-    textSize(23);
-    if (bpm >= 100 && bpm <= 120) {
-        fill(3, 134, 96);   // green — within the recommended 100-120 bpm range
-    } else {
-        fill(250, 50, 60); // red — too slow or too fast
+    // Guarded: an unguarded image() call on a failed/incomplete load
+    // throws and silently halts the rest of playScreen() for that frame.
+    if (playimg && playimg.width) {
+        image(playimg, width / 2, height / 2);
     }
-    text(round(bpm), 0, 0);
-    pop();
+
+    // ---- BPM block (top-left): only drawn in "with BPM feedback" mode ----
+    if (bpmFeedbackEnabled) {
+        push();
+        noStroke();
+        fill("#EEEEEE");
+        rect(122, 44, 150, 11, 11);
+        pop();
+
+        push();
+        imageMode(CENTER);
+        if (meterimg && meterimg.width) {
+            image(meterimg, 78, 48);
+        }
+        pop();
+
+        push();
+        angleMode(RADIANS);
+        translate(20, 48);
+        rotate(-HALF_PI);
+        textAlign(CENTER, TOP);
+        textSize(23);
+        if (bpm >= 100 && bpm <= 120) {
+            fill(3, 134, 96);   // green — within the recommended 100-120 bpm range
+        } else {
+            fill(250, 50, 60); // red — too slow or too fast
+        }
+        text(round(bpm), 0, 0);
+        pop();
+    }
+
+    // ---- Compression counter (left-middle) ----
     push();
     angleMode(RADIANS);
     translate(30, 335);
@@ -1999,35 +2030,44 @@ function playScreen() {
     }
     text(numberToDisplay + " AND", 0, 0);
     pop();
-    push();
-    translate(83, 47);
-    imageMode(CENTER);
-    angleMode(DEGREES);
-    rotate(angle);
-    image(arrowimg, 0, 0);
-    pop();
-    push();
-    angleMode(RADIANS);
-    translate(106, 50);
-    rotate(-HALF_PI);
-    textAlign(CENTER, TOP);
-    textSize(11);
-    textStyle(BOLD);
-    fill(0);
-    text("BPM", 0, 0);
-    textStyle(NORMAL);
-    pop();
+
+    if (bpmFeedbackEnabled) {
+        push();
+        translate(83, 47);
+        imageMode(CENTER);
+        angleMode(DEGREES);
+        rotate(angle);
+        if (arrowimg && arrowimg.width) {
+            image(arrowimg, 0, 0);
+        }
+        pop();
+
+        push();
+        angleMode(RADIANS);
+        translate(106, 50);
+        rotate(-HALF_PI);
+        textAlign(CENTER, TOP);
+        textSize(11);
+        textStyle(BOLD);
+        fill(0);
+        text("BPM", 0, 0);
+        textStyle(NORMAL);
+        pop();
+    }
+
+    // ---- Blood flow bar (top-right) ----
     progress -= 1;
-    console.log(progress);
-    progress = constrain(progress, 6, 200);
+    progress = constrain(progress, 6, 150);
+
     push();
     noStroke();
     fill("#FF5058");
-    rect(332, 44, -progress, 11, 11);
+    rect(272, 44, -progress, 11, 11);
     pop();
+
     push();
     angleMode(RADIANS);
-    translate(346, 50);
+    translate(277, 50);
     rotate(-HALF_PI);
     textAlign(CENTER, TOP);
     textSize(11);
@@ -2036,23 +2076,29 @@ function playScreen() {
     text("Blood flow", 0, 0);
     textStyle(NORMAL);
     pop();
+
     cheekOpacity = map(progress, 6, 210, 40, 255);
     lipOpacity = map(progress, 6, 210, 120, 255);
+
     push();
     noStroke();
     fill(253, 175, 179, cheekOpacity);
     circle(width * 0.7, height * 0.2, 132);
     pop();
+
     push();
     noStroke();
     fill(253, 175, 179, cheekOpacity);
     circle(width * 0.7, height * 0.8, 132);
     pop();
+
     push();
     noStroke();
     fill(255, 124, 130, lipOpacity);
     ellipse(width * 0.82, height * 0.5, 42, 120);
-    console.log(diffGoal);
+    pop();
+
+    // ---- Time left (left-bottom) ----
     push();
     angleMode(RADIANS);
     translate(30, 520);
@@ -2064,6 +2110,7 @@ function playScreen() {
     if (timeleft < 0) { timeleft = 0; }
     text(round((timeleft / 1000), 0) + "s", 0, 0);
     pop();
+
     push();
     angleMode(RADIANS);
     translate(52, 520);
@@ -2073,8 +2120,8 @@ function playScreen() {
     fill(0);
     text("Time left", 0, 0);
     pop();
+
     lastTouchElapsed = (millis() - pressed_time);
-    console.log(lastTouchElapsed);
     handle_inactivity();
 }
 function handle_inactivity() {
