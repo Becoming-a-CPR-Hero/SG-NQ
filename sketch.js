@@ -176,9 +176,9 @@ let angle = 0;
 let bpmFeedbackEnabled = true;   // true = show BPM meter/number/arrow on the play screen, false = hide it (set via the "only compressions" BPM-choice modal)
 
 // ---- Rhythm guide ----
-// Shown in the spot where the "N AND" counter used to be. Flashes "PRESS"
-// on every beat at guideBpm (and plays a soft tick) so the learner can
-// match the rhythm. 0 = guide off (the old "N AND" counter is shown).
+// Shown in the spot where the "N AND" counter used to be. A filled circle
+// means PRESS and an empty circle means LIFT, alternating every half beat
+// at guideBpm (with a soft tick on each press) so the learner can match the rhythm. 0 = guide off (the old "N AND" counter is shown).
 // Only 100 / 110 / 120 are offered, so every choice sits inside the
 // 100-120 BPM window the scoring uses.
 let guideBpm = 120;
@@ -214,24 +214,23 @@ function drawRhythmGuide() {
         if (guideSoundReady) guideEnv.play();
     }
 
-    // k = 1 right on the beat, fading to 0 by half a beat later
-    const k = constrain(1 - phase / 0.5, 0, 1);
+    // First half of each beat = PRESS (filled circle), second half = LIFT (empty circle)
+    const pressing = phase < 0.5;
 
     push();
-    angleMode(RADIANS);
-    translate(30, 335);
-    rotate(-HALF_PI);
-    textAlign(CENTER, TOP);
-    textStyle(BOLD);
-    textSize(23 + 7 * k);
-    fill(lerpColor(color(150), color("#F25C3B"), k));
-    text("PRESS", 0, 0);
-    textStyle(NORMAL);
+    strokeWeight(4);
+    stroke("#F25C3B");
+    if (pressing) {
+        fill("#F25C3B");
+    } else {
+        noFill();
+    }
+    circle(42, 335, 36);
     pop();
 
     push();
     angleMode(RADIANS);
-    translate(60, 335);
+    translate(72, 335);
     rotate(-HALF_PI);
     textAlign(CENTER, TOP);
     textSize(11);
