@@ -178,14 +178,47 @@ let bpmFeedbackEnabled = true;   // true = show BPM meter/number/arrow on the pl
 // ---- Rhythm guide ----
 // Shown in the spot where the "N AND" counter used to be. A filled circle
 // means PRESS and an empty circle means LIFT, alternating every half beat
-// at guideBpm (with a soft tick on each press) so the learner can match the rhythm. 0 = guide off (the old "N AND" counter is shown).
-// Only 100 / 110 / 120 are offered, so every choice sits inside the
-// 100-120 BPM window the scoring uses.
-let guideBpm = 120;
+// to the beat of "Stayin' Alive" (about 103 BPM, inside the 100-120 BPM
+// window the scoring uses). guideBpm = 0 turns the guide off and brings
+// back the old "N AND" counter.
+//
+// Optional: put a licensed copy of the song next to index.html as
+// STAYIN_AUDIO_FILE and it plays during compressions, with the circle
+// following the song's own clock. If STAYIN_FIRST_BEAT_SEC is the time in
+// the recording of its first beat, the circle lands on that beat. If the file is missing, the circle just
+// runs at STAYIN_BPM with a soft tick instead.
+const STAYIN_BPM = 103;
+const STAYIN_AUDIO_FILE = "stayinalive.mp3";
+const STAYIN_FIRST_BEAT_SEC = 0;
+let stayinAudio = null;
+let stayinAudioOk = false;
+let guideBpm = STAYIN_BPM;
 const GUIDE_TICK_SOUND = true;   // set to false for a silent, visual-only guide
 let guideOsc, guideEnv;
 let guideSoundReady = false;
 let lastGuideBeat = -1;
+
+function loadStayinAudio() {
+    try {
+        const a = new Audio(STAYIN_AUDIO_FILE);
+        a.preload = "auto";
+        a.loop = true;
+        a.addEventListener("canplaythrough", () => { stayinAudioOk = true; });
+        a.addEventListener("error", () => { stayinAudioOk = false; });
+        stayinAudio = a;
+        a.load();
+    } catch (e) {
+        stayinAudioOk = false;
+    }
+}
+loadStayinAudio();
+
+function stopStayinAudio() {
+    if (stayinAudio && !stayinAudio.paused) {
+        stayinAudio.pause();
+        stayinAudio.currentTime = 0;
+    }
+}
 
 function ensureGuideSound() {
     if (guideSoundReady || !GUIDE_TICK_SOUND) return;
@@ -204,14 +237,29 @@ function ensureGuideSound() {
 }
 
 function drawRhythmGuide() {
-    const beatMs = 60000 / guideBpm;
-    const beatIndex = Math.floor(play_elapsed / beatMs);
-    const phase = (play_elapsed % beatMs) / beatMs;   // 0 right on the beat -> 1 just before the next
+    const beatSec = 60 / guideBpm;
+    const useSong = (guideBpm === STAYIN_BPM) && stayinAudioOk;
+    let beatPos;   // position in beats: whole part = beat number, fraction = how far through it
+
+    if (useSong) {
+        if (stayinAudio.paused) {
+            stayinAudio.currentTime = 0;
+            stayinAudio.play().catch(() => {});
+        }
+        beatPos = (stayinAudio.currentTime - STAYIN_FIRST_BEAT_SEC) / beatSec;
+    } else {
+        beatPos = play_elapsed / 1000 / beatSec;
+    }
+
+    const beatIndex = Math.floor(beatPos);
+    const phase = beatPos - beatIndex;   // 0 right on the beat -> 1 just before the next
 
     if (beatIndex !== lastGuideBeat) {
         lastGuideBeat = beatIndex;
-        ensureGuideSound();
-        if (guideSoundReady) guideEnv.play();
+        if (!useSong) {                  // the song is its own click track
+            ensureGuideSound();
+            if (guideSoundReady) guideEnv.play();
+        }
     }
 
     // First half of each beat = PRESS (filled circle), second half = LIFT (empty circle)
@@ -235,7 +283,7 @@ function drawRhythmGuide() {
     textAlign(CENTER, TOP);
     textSize(11);
     fill(0);
-    text(compression_count + " pressed  \u00B7  " + guideBpm + " BPM guide", 0, 0);
+    text(compression_count + " pressed  \u00B7  " + (guideBpm === STAYIN_BPM ? "Stayin' Alive" : guideBpm + " BPM guide"), 0, 0);
     pop();
 }
 let bpm = 0; 
@@ -1690,7 +1738,7 @@ window.onload = () => {
         promisesealedrani.style.display = "none";
         begin1.style.display = "flex";
         bpmFeedbackEnabled = true; // full scenarios always show BPM feedback by default
-        guideBpm = 120;            // full scenarios start with the 120 BPM rhythm guide
+        guideBpm = STAYIN_BPM;     // full scenarios start with the Stayin' Alive rhythm guide
         syncGuideChips();
         reset();
         dialDisplay.textContent = "995";
@@ -1947,6 +1995,7 @@ function draw() {
            logSession();
         }
     }
+    if (currentState !== "play") stopStayinAudio();
     if (!canvasActive) return;
     if (currentState === "play") {
         play_elapsed = millis() - play_start_time;
