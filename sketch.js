@@ -175,116 +175,97 @@ let progress = 0;
 let angle = 0;
 let bpmFeedbackEnabled = true;   // true = show BPM meter/number/arrow on the play screen, false = hide it (set via the "only compressions" BPM-choice modal)
 
-// ---- Rhythm guide ----
-// Shown in the spot where the "N AND" counter used to be. A filled circle
-// means PRESS and an empty circle means LIFT, alternating every half beat
-// to the beat of "Stayin' Alive" (about 103 BPM, inside the 100-120 BPM
-// window the scoring uses). guideBpm = 0 turns the guide off and brings
-// back the old "N AND" counter.
+// ---- Practice background (optional) ----
+// Chosen in the "Only compressions" popup. Plays while the learner
+// compresses so they can keep the rhythm by ear:
+//   metronome   = a soft click at 110 BPM
+//   stayin      = "Stayin' Alive" (about 103 BPM)
+//   shark       = "Baby Shark"    (about 115 BPM)
+// All three tempos sit inside the 100-120 BPM window the scoring uses.
 //
-// Optional: put a licensed copy of the song next to index.html as
-// STAYIN_AUDIO_FILE and it plays during compressions, with the circle
-// following the song's own clock. If STAYIN_FIRST_BEAT_SEC is the time in
-// the recording of its first beat, the circle lands on that beat. If the file is missing, the circle just
-// runs at STAYIN_BPM with a soft tick instead.
-const STAYIN_BPM = 103;
-const STAYIN_AUDIO_FILE = "stayinalive.mp3";
-const STAYIN_FIRST_BEAT_SEC = 0;
-let stayinAudio = null;
-let stayinAudioOk = false;
-let guideBpm = STAYIN_BPM;
-const GUIDE_TICK_SOUND = true;   // set to false for a silent, visual-only guide
-let guideOsc, guideEnv;
-let guideSoundReady = false;
-let lastGuideBeat = -1;
+// The two songs are copyrighted recordings, so they are not bundled. Put
+// licensed copies next to index.html with the file names below and they
+// play on a loop. If a file is missing, that option falls back to the soft
+// click at the song's tempo, so the choice still gives a rhythm to follow.
+const PRACTICE_BG = {
+    metronome: { label: "Metronome",     bpm: 110, file: null },
+    stayin:    { label: "Stayin' Alive", bpm: 103, file: "stayinalive.mp3" },
+    shark:     { label: "Baby Shark",    bpm: 115, file: "babyshark.mp3" }
+};
+let practiceBgMode = "none";     // "none" | "metronome" | "stayin" | "shark"
+const bgAudio = {};              // mode -> { el, ok, lastTry }
+let tickOsc, tickEnv;
+let tickReady = false;
+let lastBgBeat = -1;
 
-function loadStayinAudio() {
-    try {
-        const a = new Audio(STAYIN_AUDIO_FILE);
-        a.preload = "auto";
-        a.loop = true;
-        a.addEventListener("canplaythrough", () => { stayinAudioOk = true; });
-        a.addEventListener("error", () => { stayinAudioOk = false; });
-        stayinAudio = a;
-        a.load();
-    } catch (e) {
-        stayinAudioOk = false;
-    }
-}
-loadStayinAudio();
-
-function stopStayinAudio() {
-    if (stayinAudio && !stayinAudio.paused) {
-        stayinAudio.pause();
-        stayinAudio.currentTime = 0;
-    }
-}
-
-function ensureGuideSound() {
-    if (guideSoundReady || !GUIDE_TICK_SOUND) return;
-    try {
-        guideEnv = new p5.Envelope();
-        guideEnv.setADSR(0.001, 0.04, 0, 0.04);
-        guideEnv.setRange(0.35, 0);
-        guideOsc = new p5.Oscillator('sine');
-        guideOsc.freq(880);
-        guideOsc.amp(guideEnv);
-        guideOsc.start();
-        guideSoundReady = true;
-    } catch (e) {
-        console.warn("Rhythm guide tick unavailable:", e);
-    }
-}
-
-function drawRhythmGuide() {
-    const beatSec = 60 / guideBpm;
-    const useSong = (guideBpm === STAYIN_BPM) && stayinAudioOk;
-    let beatPos;   // position in beats: whole part = beat number, fraction = how far through it
-
-    if (useSong) {
-        if (stayinAudio.paused) {
-            stayinAudio.currentTime = 0;
-            stayinAudio.play().catch(() => {});
+function loadPracticeAudio() {
+    Object.keys(PRACTICE_BG).forEach(mode => {
+        const file = PRACTICE_BG[mode].file;
+        if (!file) return;
+        try {
+            const el = new Audio(file);
+            el.preload = "auto";
+            el.loop = true;
+            const rec = { el: el, ok: false, lastTry: -9999 };
+            el.addEventListener("canplaythrough", () => { rec.ok = true; });
+            el.addEventListener("error", () => { rec.ok = false; });
+            bgAudio[mode] = rec;
+            el.load();
+        } catch (e) {
+            console.warn("Practice audio unavailable:", file, e);
         }
-        beatPos = (stayinAudio.currentTime - STAYIN_FIRST_BEAT_SEC) / beatSec;
-    } else {
-        beatPos = play_elapsed / 1000 / beatSec;
-    }
+    });
+}
+loadPracticeAudio();
 
-    const beatIndex = Math.floor(beatPos);
-    const phase = beatPos - beatIndex;   // 0 right on the beat -> 1 just before the next
-
-    if (beatIndex !== lastGuideBeat) {
-        lastGuideBeat = beatIndex;
-        if (!useSong) {                  // the song is its own click track
-            ensureGuideSound();
-            if (guideSoundReady) guideEnv.play();
+function stopPracticeAudio() {
+    Object.values(bgAudio).forEach(rec => {
+        if (!rec.el.paused) {
+            rec.el.pause();
+            rec.el.currentTime = 0;
         }
+    });
+}
+
+function ensureTickSound() {
+    if (tickReady) return;
+    try {
+        tickEnv = new p5.Envelope();
+        tickEnv.setADSR(0.001, 0.04, 0, 0.04);
+        tickEnv.setRange(0.35, 0);
+        tickOsc = new p5.Oscillator('sine');
+        tickOsc.freq(880);
+        tickOsc.amp(tickEnv);
+        tickOsc.start();
+        tickReady = true;
+    } catch (e) {
+        console.warn("Metronome tick unavailable:", e);
+    }
+}
+
+// Called every frame while on the play screen.
+function runPracticeBackground() {
+    const bg = PRACTICE_BG[practiceBgMode];
+    if (!bg) return;
+
+    const rec = bgAudio[practiceBgMode];
+    if (rec && rec.ok) {
+        // Real song available: start it and let it loop.
+        if (rec.el.paused && millis() - rec.lastTry > 500) {
+            rec.lastTry = millis();
+            rec.el.currentTime = 0;
+            rec.el.play().catch(() => {});
+        }
+        return;
     }
 
-    // First half of each beat = PRESS (filled circle), second half = LIFT (empty circle)
-    const pressing = phase < 0.5;
-
-    push();
-    strokeWeight(4);
-    stroke("#F25C3B");
-    if (pressing) {
-        fill("#F25C3B");
-    } else {
-        noFill();
+    // Metronome, or a song whose file is missing: soft click on every beat.
+    const beatIndex = Math.floor(play_elapsed / (60000 / bg.bpm));
+    if (beatIndex !== lastBgBeat) {
+        lastBgBeat = beatIndex;
+        ensureTickSound();
+        if (tickReady) tickEnv.play();
     }
-    circle(42, 335, 36);
-    pop();
-
-    push();
-    angleMode(RADIANS);
-    translate(72, 335);
-    rotate(-HALF_PI);
-    textAlign(CENTER, TOP);
-    textSize(11);
-    fill(0);
-    text(compression_count + " pressed  \u00B7  " + (guideBpm === STAYIN_BPM ? "Stayin' Alive" : guideBpm + " BPM guide"), 0, 0);
-    pop();
 }
 let bpm = 0; 
 let bpmSum = 0;         // running total of every instantaneous BPM reading this session, for the average
@@ -1064,13 +1045,13 @@ window.onload = () => {
     const bpmChoiceModal = document.getElementById("bpmChoiceModal");
     const withBpmBtn = document.getElementById("withBpmBtn");
     const withoutBpmBtn = document.getElementById("withoutBpmBtn");
-    const guideChips = document.querySelectorAll(".guideChip");
-    const syncGuideChips = () => {
-        guideChips.forEach(c => c.classList.toggle("active", parseInt(c.dataset.bpm, 10) === guideBpm));
+    const bgChips = document.querySelectorAll(".bgChip");
+    const syncBgChips = () => {
+        bgChips.forEach(c => c.classList.toggle("active", c.dataset.bg === practiceBgMode));
     };
-    guideChips.forEach(c => bindTap(c, () => {
-        guideBpm = parseInt(c.dataset.bpm, 10);
-        syncGuideChips();
+    bgChips.forEach(c => bindTap(c, () => {
+        practiceBgMode = c.dataset.bg;
+        syncBgChips();
     }));
     const protocolCheckModal = document.getElementById("protocolCheckModal");
     const protocolYesBtn = document.getElementById("protocolYesBtn");
@@ -1738,8 +1719,8 @@ window.onload = () => {
         promisesealedrani.style.display = "none";
         begin1.style.display = "flex";
         bpmFeedbackEnabled = true; // full scenarios always show BPM feedback by default
-        guideBpm = STAYIN_BPM;     // full scenarios start with the Stayin' Alive rhythm guide
-        syncGuideChips();
+        practiceBgMode = "none";   // full scenarios start with no background
+        syncBgChips();
         reset();
         dialDisplay.textContent = "995";
         dialDisplay.classList.add("empty");
@@ -1752,7 +1733,7 @@ window.onload = () => {
     // whether the learner wants BPM feedback visible during the drill.
     const handleOnlyCompressions = () => {
         practiceChoiceModal.style.display = "none";
-        syncGuideChips();
+        syncBgChips();
         bpmChoiceModal.style.display = "flex";
     };
     bindTap(onlyCompressionsBtn, handleOnlyCompressions);
@@ -1995,7 +1976,7 @@ function draw() {
            logSession();
         }
     }
-    if (currentState !== "play") stopStayinAudio();
+    if (currentState !== "play") stopPracticeAudio();
     if (!canvasActive) return;
     if (currentState === "play") {
         play_elapsed = millis() - play_start_time;
@@ -2004,6 +1985,7 @@ function draw() {
             handle_performance();
             return;
         }
+        runPracticeBackground();
     }
     background("#FFC5B7");
     textAlign(CENTER, CENTER);
@@ -2090,28 +2072,24 @@ function playScreen() {
         pop();
     }
 
-    // ---- Rhythm guide, or the plain compression counter when the guide is off (left-middle) ----
-    if (guideBpm > 0) {
-        drawRhythmGuide();
+    // ---- Compression counter (left-middle) ----
+    push();
+    angleMode(RADIANS);
+    translate(30, 335);
+    rotate(-HALF_PI);
+    textAlign(CENTER, TOP);
+    textSize(23);
+    fill(0);
+    let numberToDisplay;
+    if (compression_count === 0) {
+        numberToDisplay = 0;
+    } else if (compression_count % 5 === 0) {
+        numberToDisplay = compression_count;
     } else {
-        push();
-        angleMode(RADIANS);
-        translate(30, 335);
-        rotate(-HALF_PI);
-        textAlign(CENTER, TOP);
-        textSize(23);
-        fill(0);
-        let numberToDisplay;
-        if (compression_count === 0) {
-            numberToDisplay = 0;
-        } else if (compression_count % 5 === 0) {
-            numberToDisplay = compression_count;
-        } else {
-            numberToDisplay = compression_count % 5;
-        }
-        text(numberToDisplay + " AND", 0, 0);
-        pop();
+        numberToDisplay = compression_count % 5;
     }
+    text(numberToDisplay + " AND", 0, 0);
+    pop();
 
     if (bpmFeedbackEnabled) {
         push();
@@ -2484,7 +2462,7 @@ function reset() {
     bpm = 0;
     bpmSum = 0;
     bpmSampleCount = 0;
-    lastGuideBeat = -1;
+    lastBgBeat = -1;
     lastTouchTime = 0;
     lastTouchElapsed = 0;
     pressed_time = 0;
