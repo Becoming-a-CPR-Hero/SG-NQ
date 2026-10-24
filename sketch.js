@@ -12,6 +12,45 @@ try {
   currentLang = localStorage.getItem("cprLang") || "en";
 } catch (e) { /* localStorage unavailable, default to English */ }
 
+// ----------------------------------------------------------------------
+// TAP HANDLING — fixes the Android "ghost click" double-advance bug
+//
+// The old pattern everywhere in this file was:
+//   el.onclick = handler;
+//   el.addEventListener('touchstart', handler);
+//
+// On Android Chrome, after a touchstart-driven handler changes the DOM
+// (hides the current screen, shows the next one), the browser still
+// fires a *synthetic* click event afterward at the same x/y coordinate.
+// Because every screen in this app is centered/full-viewport, a button
+// on the *new* screen is often sitting at that exact same spot — so the
+// synthetic click fires it too, and one tap silently advances two
+// screens. iOS Safari suppresses this compatibility click more
+// consistently, which is why the bug only shows up on Android.
+//
+// bindTap() fixes this two ways:
+//  1. e.preventDefault() on touchstart stops the synthetic click from
+//     ever being dispatched.
+//  2. A short-lived "fired" guard blocks a genuine double-fire (e.g. a
+//     browser that still sends both events) from running the handler
+//     twice.
+// Use bindTap(el, handler) everywhere instead of the old onclick +
+// addEventListener('touchstart', ...) pair.
+// ----------------------------------------------------------------------
+function bindTap(el, handler) {
+  if (!el) return;
+  let fired = false;
+  const run = (e) => {
+    if (fired) return;
+    fired = true;
+    if (e && e.type === 'touchstart' && e.cancelable) e.preventDefault();
+    handler(e);
+    setTimeout(() => { fired = false; }, 400);
+  };
+  el.addEventListener('touchstart', run, { passive: false });
+  el.addEventListener('click', run);
+}
+
 // Turns "filename.ext" into "filename_<lang>.ext" (unchanged for English).
 function localizedPath(filename) {
   if (currentLang === "en") return filename;
@@ -135,6 +174,99 @@ let progress = 0;
 //bpm meter
 let angle = 0;
 let bpmFeedbackEnabled = true;   // true = show BPM meter/number/arrow on the play screen, false = hide it (set via the "only compressions" BPM-choice modal)
+
+// ---- Practice background (optional) ----
+// Chosen in the "Only compressions" popup. Plays while the learner
+// compresses so they can keep the rhythm by ear:
+//   metronome   = a soft click at 110 BPM
+//   stayin      = "Stayin' Alive" (about 103 BPM)
+//   shark       = "Baby Shark"    (about 115 BPM)
+// All three tempos sit inside the 100-120 BPM window the scoring uses.
+//
+// The two songs are copyrighted recordings, so they are not bundled. Put
+// licensed copies next to index.html with the file names below and they
+// play on a loop. If a file is missing, that option falls back to the soft
+// click at the song's tempo, so the choice still gives a rhythm to follow.
+const PRACTICE_BG = {
+    metronome: { label: "Metronome",     bpm: 110, file: null },
+    stayin:    { label: "Stayin' Alive", bpm: 103, file: "stayinalive.mp3" },
+    shark:     { label: "Baby Shark",    bpm: 115, file: "babyshark.mp3" }
+};
+let practiceBgMode = "none";     // "none" | "metronome" | "stayin" | "shark"
+const bgAudio = {};              // mode -> { el, ok, lastTry }
+let tickOsc, tickEnv;
+let tickReady = false;
+let lastBgBeat = -1;
+
+function loadPracticeAudio() {
+    Object.keys(PRACTICE_BG).forEach(mode => {
+        const file = PRACTICE_BG[mode].file;
+        if (!file) return;
+        try {
+            const el = new Audio(file);
+            el.preload = "auto";
+            el.loop = true;
+            const rec = { el: el, ok: false, lastTry: -9999 };
+            el.addEventListener("canplaythrough", () => { rec.ok = true; });
+            el.addEventListener("error", () => { rec.ok = false; });
+            bgAudio[mode] = rec;
+            el.load();
+        } catch (e) {
+            console.warn("Practice audio unavailable:", file, e);
+        }
+    });
+}
+loadPracticeAudio();
+
+function stopPracticeAudio() {
+    Object.values(bgAudio).forEach(rec => {
+        if (!rec.el.paused) {
+            rec.el.pause();
+            rec.el.currentTime = 0;
+        }
+    });
+}
+
+function ensureTickSound() {
+    if (tickReady) return;
+    try {
+        tickEnv = new p5.Envelope();
+        tickEnv.setADSR(0.001, 0.04, 0, 0.04);
+        tickEnv.setRange(0.35, 0);
+        tickOsc = new p5.Oscillator('sine');
+        tickOsc.freq(880);
+        tickOsc.amp(tickEnv);
+        tickOsc.start();
+        tickReady = true;
+    } catch (e) {
+        console.warn("Metronome tick unavailable:", e);
+    }
+}
+
+// Called every frame while on the play screen.
+function runPracticeBackground() {
+    const bg = PRACTICE_BG[practiceBgMode];
+    if (!bg) return;
+
+    const rec = bgAudio[practiceBgMode];
+    if (rec && rec.ok) {
+        // Real song available: start it and let it loop.
+        if (rec.el.paused && millis() - rec.lastTry > 500) {
+            rec.lastTry = millis();
+            rec.el.currentTime = 0;
+            rec.el.play().catch(() => {});
+        }
+        return;
+    }
+
+    // Metronome, or a song whose file is missing: soft click on every beat.
+    const beatIndex = Math.floor(play_elapsed / (60000 / bg.bpm));
+    if (beatIndex !== lastBgBeat) {
+        lastBgBeat = beatIndex;
+        ensureTickSound();
+        if (tickReady) tickEnv.play();
+    }
+}
 let bpm = 0; 
 let bpmSum = 0;         // running total of every instantaneous BPM reading this session, for the average
 let bpmSampleCount = 0; // how many readings have gone into bpmSum
@@ -571,8 +703,7 @@ function setupQuestion(config) {
 
     }
 
-    notSure.addEventListener("click", handleNotSure);
-    notSure.addEventListener("touchstart", handleNotSure);
+    bindTap(notSure, handleNotSure);
 
     // Next
     function handleNext() {
@@ -588,8 +719,7 @@ function setupQuestion(config) {
 
     }
 
-    nextBtn.addEventListener("click", handleNext);
-    nextBtn.addEventListener("touchstart", handleNext);
+    bindTap(nextBtn, handleNext);
 
 }
 window.onload = () => {
@@ -915,6 +1045,14 @@ window.onload = () => {
     const bpmChoiceModal = document.getElementById("bpmChoiceModal");
     const withBpmBtn = document.getElementById("withBpmBtn");
     const withoutBpmBtn = document.getElementById("withoutBpmBtn");
+    const bgChips = document.querySelectorAll(".bgChip");
+    const syncBgChips = () => {
+        bgChips.forEach(c => c.classList.toggle("active", c.dataset.bg === practiceBgMode));
+    };
+    bgChips.forEach(c => bindTap(c, () => {
+        practiceBgMode = c.dataset.bg;
+        syncBgChips();
+    }));
     const protocolCheckModal = document.getElementById("protocolCheckModal");
     const protocolYesBtn = document.getElementById("protocolYesBtn");
     const protocolNoBtn = document.getElementById("protocolNoBtn");
@@ -972,8 +1110,7 @@ window.onload = () => {
             if (e) e.preventDefault();
             addDigit(digit);
         };
-        btnElement.addEventListener('click', handler);
-        btnElement.addEventListener('touchstart', handler);
+        bindTap(btnElement, handler);
     };
     setupDialButton(dialBtn0, '0');
     setupDialButton(dialBtn1, '1');
@@ -985,8 +1122,7 @@ window.onload = () => {
     setupDialButton(dialBtn7, '7');
     setupDialButton(dialBtn8, '8');
     setupDialButton(dialBtn9, '9');
-    deleteBtnDial.addEventListener('click', deleteDigit);
-    deleteBtnDial.addEventListener('touchstart', deleteDigit);
+    bindTap(deleteBtnDial, deleteDigit);
     checkCallButtonState();
     dialDisplay.textContent = "995";
     dialDisplay.classList.add("empty"); 
@@ -1032,16 +1168,14 @@ window.onload = () => {
                 window.location.reload();
             }
         };
-        btn.addEventListener('click', choose);
-        btn.addEventListener('touchstart', choose);
+        bindTap(btn, choose);
     });
 
     const handleConsent = () => {
         consent.style.display = "none";
         nameEntry.style.display = "flex";
     };
-    consentBtn.onclick = handleConsent;
-    consentBtn.addEventListener('touchstart', handleConsent);
+    bindTap(consentBtn, handleConsent);
 
     // Prefill with last-used name, if any
     try {
@@ -1061,8 +1195,7 @@ window.onload = () => {
         nameEntry.style.display = "none";
         begin1.style.display = "flex";
     };
-    nameNext.onclick = handleNameNext;
-    nameNext.addEventListener('touchstart', handleNameNext);
+    bindTap(nameNext, handleNameNext);
 
     preq1input.addEventListener("input", function () {
         if (preq1input.value.trim() !== "") {
@@ -1080,8 +1213,7 @@ window.onload = () => {
         preq1.style.display = "none";
         preq2.style.display = "flex";
     };
-    preq1Next.onclick = handlePreQ1Next;
-    preq1Next.addEventListener('touchstart', handlePreQ1Next);
+    bindTap(preq1Next, handlePreQ1Next);
 
     const handlePreQ1NotSure = () => {
         preAnswers.q1 = "Not sure";
@@ -1089,8 +1221,7 @@ window.onload = () => {
         preq1input.classList.remove("selected");
         preq1NotSure.classList.add("selected");
     };
-    preq1NotSure.addEventListener("click", handlePreQ1NotSure);
-    preq1NotSure.addEventListener("touchstart", handlePreQ1NotSure);
+    bindTap(preq1NotSure, handlePreQ1NotSure);
 
     postq7CameraInput.addEventListener("change", (event) => {
         const file = event.target.files[0];
@@ -1112,8 +1243,7 @@ window.onload = () => {
         logSession();
         showPromiseScreen();
     };
-    postq7Next.onclick = handlePostQ7Next;
-    postq7Next.addEventListener("touchstart", handlePostQ7Next);
+    bindTap(postq7Next, handlePostQ7Next);
 
     const handleBegin = () => {
         userStartAudio();
@@ -1121,15 +1251,13 @@ window.onload = () => {
         begin1.style.display = "none";
         cardboardTutorial.style.display = "flex";
     };
-    beginBtn.onclick = handleBegin;
-    beginBtn.addEventListener('touchstart', handleBegin);
+    bindTap(beginBtn, handleBegin);
 
     const handleTutorialDone = () => {
         cardboardTutorial.style.display = "none";
         gender.style.display = "flex";
     };
-    tutorialDoneBtn.onclick = handleTutorialDone;
-    tutorialDoneBtn.addEventListener('touchstart', handleTutorialDone);
+    bindTap(tutorialDoneBtn, handleTutorialDone);
     // Tapping the intro bubble used to jump straight to cpr5 (skipping
     // the whole check-danger/response/breathing flow). It now first asks
     // whether the learner has already followed the check-call-compress
@@ -1142,8 +1270,7 @@ window.onload = () => {
         introAudio.currentTime = 0;
         protocolCheckModal.style.display = "flex";
     };
-    beginBubBtn.onclick = handleBubbleShortcut;
-    beginBubBtn.addEventListener('touchstart', handleBubbleShortcut);
+    bindTap(beginBubBtn, handleBubbleShortcut);
 
     // "Yes" — same shortcut as before: skip straight to cpr5.
     const handleProtocolYes = () => {
@@ -1156,8 +1283,7 @@ window.onload = () => {
         cprC4aud.stop();
         cprBeginaud.play();
     };
-    protocolYesBtn.onclick = handleProtocolYes;
-    protocolYesBtn.addEventListener('touchstart', handleProtocolYes);
+    bindTap(protocolYesBtn, handleProtocolYes);
 
     // "No, I am not aware of this protocol" — swap to the second modal,
     // which explains the protocol and offers to start proper training.
@@ -1165,8 +1291,7 @@ window.onload = () => {
         protocolCheckModal.style.display = "none";
         protocolInfoModal.style.display = "flex";
     };
-    protocolNoBtn.onclick = handleProtocolNo;
-    protocolNoBtn.addEventListener('touchstart', handleProtocolNo);
+    bindTap(protocolNoBtn, handleProtocolNo);
 
     // "Start" on the second modal — begin the full training flow from
     // checkdanger, same entry point as the normal "Start" button on the
@@ -1178,8 +1303,7 @@ window.onload = () => {
         checkdanger.style.display = "flex";
         checkdAudio.play();
     };
-    protocolStartBtn.onclick = handleProtocolStart;
-    protocolStartBtn.addEventListener('touchstart', handleProtocolStart);
+    bindTap(protocolStartBtn, handleProtocolStart);
     const handleRaja = () => {
         genderState = 1;
         console.log("Gender:", genderState);
@@ -1187,8 +1311,7 @@ window.onload = () => {
         gender.style.display = "none";
         intro.style.display = "flex";
     };
-    rajaBtn.onclick = handleRaja;
-    rajaBtn.addEventListener('touchstart', handleRaja);
+    bindTap(rajaBtn, handleRaja);
     const handleRani = () => {
         genderState = 0;
         console.log("Gender:", genderState);
@@ -1196,8 +1319,7 @@ window.onload = () => {
         gender.style.display = "none";
         intro.style.display = "flex";
     };
-    raniBtn.onclick = handleRani;
-    raniBtn.addEventListener('touchstart', handleRani);
+    bindTap(raniBtn, handleRani);
     const handleStart = () => {
         intro.style.display = "none";
         checkdanger.style.display = "flex";
@@ -1205,8 +1327,7 @@ window.onload = () => {
         introAudio.currentTime = 0;
         checkdAudio.play();
     };
-    startBtn.onclick = handleStart;
-    startBtn.addEventListener('touchstart', handleStart);
+    bindTap(startBtn, handleStart);
     const handleDyes = () => {
         checkdAudio.pause();
         checkdAudio.currentTime = 0;
@@ -1223,8 +1344,7 @@ window.onload = () => {
             did_spongy_respond.play();
         }, 8000);
     };
-    dyesBtn.onclick = handleDyes;
-    dyesBtn.addEventListener('touchstart', handleDyes);
+    bindTap(dyesBtn, handleDyes);
     const handleDno = () => {
         checkdAudio.pause();
         checkdAudio.currentTime = 0;
@@ -1232,8 +1352,7 @@ window.onload = () => {
         checkdanger.style.display = "none";
         dnotsafeq.style.display = "flex";
     };
-    dnoBtn.onclick = handleDno;
-    dnoBtn.addEventListener('touchstart', handleDno);
+    bindTap(dnoBtn, handleDno);
     const handleNowSafe = () => {
         dnotsafeAudio.pause();
         dnotsafeAudio.currentTime = 0;
@@ -1248,8 +1367,7 @@ window.onload = () => {
             did_spongy_respond.play();
         }, 8000);
     };
-    nowsafeBtn.onclick = handleNowSafe;
-    nowsafeBtn.addEventListener('touchstart', handleNowSafe);
+    bindTap(nowsafeBtn, handleNowSafe);
     const handleCantSafe = () => {
         dnotsafeAudio.pause();
         dnotsafeAudio.currentTime = 0;
@@ -1258,8 +1376,7 @@ window.onload = () => {
         dcantsafe.style.display = "flex";
        logSession();
     };
-    cantsafeBtn.onclick = handleCantSafe;
-    cantsafeBtn.addEventListener('touchstart', handleCantSafe);
+    bindTap(cantsafeBtn, handleCantSafe);
     const handleNextP = () => {
         cantdsafe.pause();
         cantdsafe.currentTime = 0;
@@ -1279,8 +1396,7 @@ window.onload = () => {
             }, 2000);
         }
     };
-    nextpBtn.onclick = handleNextP;
-    nextpBtn.addEventListener('touchstart', handleNextP);
+    bindTap(nextpBtn, handleNextP);
     const handleDPromisePress = () => {
         promisedaud.pause();
         promisedaud.currentTime = 0;
@@ -1289,8 +1405,7 @@ window.onload = () => {
         promisedrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    dpromisepress.onclick = handleDPromisePress;
-    dpromisepress.addEventListener('touchstart', handleDPromisePress);
+    bindTap(dpromisepress, handleDPromisePress);
     const handleDRaniPromisePress = () => {
         promisedaud.pause();
         promisedaud.currentTime = 0;
@@ -1299,15 +1414,13 @@ window.onload = () => {
         promisedranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    dranipromisepress.onclick = handleDRaniPromisePress;
-    dranipromisepress.addEventListener('touchstart', handleDRaniPromisePress);
+    bindTap(dranipromisepress, handleDRaniPromisePress);
     const handleNext = () => {
         respondednextaud.play();
         awake.style.display = "none";
         responded.style.display = "flex";
     };
-    nextBtn.onclick = handleNext;
-    nextBtn.addEventListener('touchstart', handleNext);
+    bindTap(nextBtn, handleNext);
     const handleNextPR = () => {
         responded.style.display = "none";
         promisertaud.play();
@@ -1326,8 +1439,7 @@ window.onload = () => {
             }, 2000);
         }
     };
-    nextprBtn.onclick = handleNextPR;
-    nextprBtn.addEventListener('touchstart', handleNextPR);
+    bindTap(nextprBtn, handleNextPR);
     const handleRRaniPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1335,8 +1447,7 @@ window.onload = () => {
         promiserranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    rranipromisepress.onclick = handleRRaniPromisePress;
-    rranipromisepress.addEventListener('touchstart', handleRRaniPromisePress);
+    bindTap(rranipromisepress, handleRRaniPromisePress);
     const handleRRajaPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1344,8 +1455,7 @@ window.onload = () => {
         promiserrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    rrajapromisepress.onclick = handleRRajaPromisePress;
-    rrajapromisepress.addEventListener('touchstart', handleRRajaPromisePress);
+    bindTap(rrajapromisepress, handleRRajaPromisePress);
     const handleRno = () => {
         userStartAudio();
         did_spongy_respond.pause();
@@ -1384,8 +1494,7 @@ window.onload = () => {
             clearInterval(breathTimerInterval);
         }, 10000);
     };
-    rnoBtn.onclick = handleRno;
-    rnoBtn.addEventListener('touchstart', handleRno);
+    bindTap(rnoBtn, handleRno);
     const handleBno = () => {
         requestaedaud.play();
       could_you_see_breathing.pause();
@@ -1393,8 +1502,7 @@ window.onload = () => {
         checkbreathingq.style.display = "none";
         requestaed.style.display = "flex";
     };
-    bnoBtn.onclick = handleBno;
-    bnoBtn.addEventListener('touchstart', handleBno);
+    bindTap(bnoBtn, handleBno);
     const handleByes = () => {
         breathingtype.play();
         could_you_see_breathing.pause();
@@ -1402,8 +1510,7 @@ window.onload = () => {
         checkbreathingq.style.display = "none";
         checkbreathingtypeq.style.display = "flex";
     };
-    byesBtn.onclick = handleByes;
-    byesBtn.addEventListener('touchstart', handleByes);
+    bindTap(byesBtn, handleByes);
     const handleNormal = () => {
         breathingtype.pause();
         breathingtype.currentTime = 0;
@@ -1412,8 +1519,7 @@ window.onload = () => {
         normalbreathing.style.display = "flex";
        logSession();
     };
-    normalBtn.onclick = handleNormal;
-    normalBtn.addEventListener('touchstart', handleNormal);
+    bindTap(normalBtn, handleNormal);
     const handleAbnormal = () => {
         breathingtype.pause();
         breathingtype.currentTime = 0;
@@ -1421,8 +1527,7 @@ window.onload = () => {
         checkbreathingtypeq.style.display = "none";
         requestaed.style.display = "flex";
     };
-    abnormalBtn.onclick = handleAbnormal;
-    abnormalBtn.addEventListener('touchstart', handleAbnormal);
+    bindTap(abnormalBtn, handleAbnormal);
     const handleNextV = () => {
         ifbreathnormalaud.stop();
         promisebtaud.play();
@@ -1441,8 +1546,7 @@ window.onload = () => {
             }, 2000);
         }
     };
-    nextvBtn.onclick = handleNextV;
-    nextvBtn.addEventListener('touchstart', handleNextV);
+    bindTap(nextvBtn, handleNextV);
     const handleBRaniPromisePress = () => {
         promisebtaud.stop();
         promisejingle.play();
@@ -1450,8 +1554,7 @@ window.onload = () => {
         promisebranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    branipromisepress.onclick = handleBRaniPromisePress;
-    branipromisepress.addEventListener('touchstart', handleBRaniPromisePress);
+    bindTap(branipromisepress, handleBRaniPromisePress);
     const handleBrajaPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1459,8 +1562,7 @@ window.onload = () => {
         promisebrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    bpromisepress.onclick = handleBrajaPromisePress;
-    bpromisepress.addEventListener('touchstart', handleBrajaPromisePress);
+    bindTap(bpromisepress, handleBrajaPromisePress);
     const handleNextA = () => {
         call112.play();
         requestaedaud.pause();
@@ -1468,8 +1570,7 @@ window.onload = () => {
         requestaed.style.display = "none";
         dial112.style.display = "flex";
     };
-    nextaBtn.onclick = handleNextA;
-    nextaBtn.addEventListener('touchstart', handleNextA);
+    bindTap(nextaBtn, handleNextA);
     const handleCall = () => {
         if (callBtn.disabled) return;
         call112.pause();
@@ -1479,8 +1580,7 @@ window.onload = () => {
         dial112.style.display = "none";
         addspeaker.style.display = "flex";
     };
-    callBtn.onclick = handleCall;
-    callBtn.addEventListener('touchstart', handleCall);
+    bindTap(callBtn, handleCall);
     const handleSpeaker = () => {
         call112.pause();
         call112.currentTime = 0;
@@ -1508,8 +1608,7 @@ window.onload = () => {
             }, 8000);
         }, 10000);
     };
-    speakerbtn.onclick = handleSpeaker;
-    speakerbtn.addEventListener('touchstart', handleSpeaker);
+    bindTap(speakerbtn, handleSpeaker);
     const stopAllCPRAudio = () => {
         victimaud.stop();
         addspeakeraud.stop();
@@ -1520,22 +1619,6 @@ window.onload = () => {
         cprC3aud.stop();
         cprC4aud.stop();
         [t1, t2, tOkOk, tHmHm, cprStepTimer].forEach(t => clearTimeout(t));
-    };
-    // Binds one handler to both touch and mouse without letting a single
-    // tap fire it twice — a defensive extra on top of the shared timeline
-    // above, in case a device fires both touchstart and a follow-up
-    // "ghost" click for the same tap.
-    const bindTap = (el, handler) => {
-        let lastFired = 0;
-        const fire = (e) => {
-            const now = Date.now();
-            if (now - lastFired < 500) return;
-            lastFired = now;
-            if (e && e.cancelable) e.preventDefault();
-            handler();
-        };
-        el.addEventListener('touchstart', fire, { passive: false });
-        el.addEventListener('click', fire);
     };
     const handleNextC1 = () => {
         clearTimeout(t1); clearTimeout(t2);
@@ -1574,8 +1657,7 @@ window.onload = () => {
             play_start_time = millis();
         });
     };
-    startcpr.onclick = handleStartCPR;
-    startcpr.addEventListener('touchstart', handleStartCPR);
+    bindTap(startcpr, handleStartCPR);
 
     // Safari's address bar can keep animating for a bit after the tap
     // that triggered it, changing the visible viewport size without
@@ -1596,8 +1678,7 @@ window.onload = () => {
         logSession();
         showPromiseScreen();
     };
-    nextwinBtn.onclick = handleNextWin;
-    nextwinBtn.addEventListener('touchstart', handleNextWin);
+    bindTap(nextwinBtn, handleNextWin);
     const handleWRaniPromisePress = () => {
         promisewtaud.stop();
         promisejingle.play();
@@ -1605,8 +1686,7 @@ window.onload = () => {
         promisewranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    wranipromisepress.onclick = handleWRaniPromisePress;
-    wranipromisepress.addEventListener('touchstart', handleWRaniPromisePress);
+    bindTap(wranipromisepress, handleWRaniPromisePress);
     const handleWPromisePress = () => {
         promisewtaud.stop();
         promisejingle.play();
@@ -1614,20 +1694,17 @@ window.onload = () => {
         promisewrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    wpromisepress.onclick = handleWPromisePress;
-    wpromisepress.addEventListener('touchstart', handleWPromisePress);
+    bindTap(wpromisepress, handleWPromisePress);
     const handlePracticeAgainRaja = () => {
         console.log("raja.....");
         practiceChoiceModal.style.display = "flex";
     };
-    practiceagainbtnraja.onclick = handlePracticeAgainRaja;
-    practiceagainbtnraja.addEventListener('touchstart', handlePracticeAgainRaja);
+    bindTap(practiceagainbtnraja, handlePracticeAgainRaja);
     const handlePracticeAgainRani = () => {
         console.log("rani.....");
         practiceChoiceModal.style.display = "flex";
     };
-    practiceagainbtnrani.onclick = handlePracticeAgainRani;
-    practiceagainbtnrani.addEventListener('touchstart', handlePracticeAgainRani);
+    bindTap(practiceagainbtnrani, handlePracticeAgainRani);
 
     // "Practice again" choice modal: take a whole new case (back to
     // begin1, same as before) or skip straight to compressions-only
@@ -1642,19 +1719,21 @@ window.onload = () => {
         promisesealedrani.style.display = "none";
         begin1.style.display = "flex";
         bpmFeedbackEnabled = true; // full scenarios always show BPM feedback by default
+        practiceBgMode = "none";   // full scenarios start with no background
+        syncBgChips();
         reset();
         dialDisplay.textContent = "995";
         dialDisplay.classList.add("empty");
         callBtn.disabled = true;
         callBtn.style.opacity = 0.5;
     };
-    newCaseBtn.onclick = handleNewCase;
-    newCaseBtn.addEventListener('touchstart', handleNewCase);
+    bindTap(newCaseBtn, handleNewCase);
 
     // "Only compressions" no longer jumps straight in — it now asks
     // whether the learner wants BPM feedback visible during the drill.
     const handleOnlyCompressions = () => {
         practiceChoiceModal.style.display = "none";
+        syncBgChips();
         bpmChoiceModal.style.display = "flex";
     };
     bindTap(onlyCompressionsBtn, handleOnlyCompressions);
@@ -1720,21 +1799,17 @@ window.onload = () => {
         renderProgressChart();
     };
     if (progressChartModeRecent) {
-        progressChartModeRecent.addEventListener('click', () => setChartMode("recent"));
-        progressChartModeRecent.addEventListener('touchstart', () => setChartMode("recent"));
+        bindTap(progressChartModeRecent, () => setChartMode("recent"));
     }
     if (progressChartModeAll) {
-        progressChartModeAll.addEventListener('click', () => setChartMode("all"));
-        progressChartModeAll.addEventListener('touchstart', () => setChartMode("all"));
+        bindTap(progressChartModeAll, () => setChartMode("all"));
     }
 
     if (checkProgressBtnRaja) {
-        checkProgressBtnRaja.addEventListener('click', openProgress);
-        checkProgressBtnRaja.addEventListener('touchstart', openProgress);
+        bindTap(checkProgressBtnRaja, openProgress);
     }
     if (checkProgressBtnRani) {
-        checkProgressBtnRani.addEventListener('click', openProgress);
-        checkProgressBtnRani.addEventListener('touchstart', openProgress);
+        bindTap(checkProgressBtnRani, openProgress);
     }
     if (progressBackBtn) {
         const closeProgress = () => {
@@ -1745,8 +1820,7 @@ window.onload = () => {
                 promisesealedrani.style.display = "flex";
             }
         };
-        progressBackBtn.addEventListener('click', closeProgress);
-        progressBackBtn.addEventListener('touchstart', closeProgress);
+        bindTap(progressBackBtn, closeProgress);
     }
 
     if (progressClearBtn) {
@@ -1763,8 +1837,7 @@ window.onload = () => {
             }
             renderProgressChart();
         };
-        progressClearBtn.addEventListener('click', clearProgress);
-        progressClearBtn.addEventListener('touchstart', clearProgress);
+        bindTap(progressClearBtn, clearProgress);
     }
 
     const handleNextAmb = () => {
@@ -1773,8 +1846,7 @@ window.onload = () => {
         logSession();
         showPromiseScreen();
     };
-    nextambBtn.onclick = handleNextAmb;
-    nextambBtn.addEventListener('touchstart', handleNextAmb);
+    bindTap(nextambBtn, handleNextAmb);
     const handleAmbRaniPromisePress = () => {
         test.play();
         promisejingle.play();
@@ -1782,8 +1854,7 @@ window.onload = () => {
         promiseambranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    promiseambranipress.onclick = handleAmbRaniPromisePress;
-    promiseambranipress.addEventListener('touchstart', handleAmbRaniPromisePress);
+    bindTap(promiseambranipress, handleAmbRaniPromisePress);
     const handleAmbRajaPromisePress = () => {
         test.play();
         promisejingle.play();
@@ -1791,16 +1862,14 @@ window.onload = () => {
         promiseambrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    promiseambrajapress.onclick = handleAmbRajaPromisePress;
-    promiseambrajapress.addEventListener('touchstart', handleAmbRajaPromisePress);
+    bindTap(promiseambrajapress, handleAmbRajaPromisePress);
     const handleNextAed = () => {
         aed.style.display = "none";
         // Post-questionnaire (postq1-7) skipped in this version.
         logSession();
         showPromiseScreen();
     };
-    nextaedBtn.onclick = handleNextAed;
-    nextaedBtn.addEventListener('touchstart', handleNextAed);
+    bindTap(nextaedBtn, handleNextAed);
     const handleAedRaniPromisePress = () => {
         promisewtaud.stop();
         promisejingle.play();
@@ -1808,8 +1877,7 @@ window.onload = () => {
         promiseaedranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    promiseaedranipress.onclick = handleAedRaniPromisePress;
-    promiseaedranipress.addEventListener('touchstart', handleAedRaniPromisePress);
+    bindTap(promiseaedranipress, handleAedRaniPromisePress);
     const handleAedRajaPromisePress = () => {
         promisewtaud.stop();
         promisejingle.play();
@@ -1817,16 +1885,14 @@ window.onload = () => {
         promiseaedrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    promiseaedrajapress.onclick = handleAedRajaPromisePress;
-    promiseaedrajapress.addEventListener('touchstart', handleAedRajaPromisePress);
+    bindTap(promiseaedrajapress, handleAedRajaPromisePress);
     const handleNextLateInactive = () => {
         lateinactive.style.display = "none";
         // Post-questionnaire (postq1-7) skipped in this version.
         logSession();
         showPromiseScreen();
     };
-    nextlateinactiveBtn.onclick = handleNextLateInactive;
-    nextlateinactiveBtn.addEventListener('touchstart', handleNextLateInactive);
+    bindTap(nextlateinactiveBtn, handleNextLateInactive);
     const handleLateInactiveRaniPromisePress = () => {
         promiseiltaud.stop();
         promisejingle.play();
@@ -1834,8 +1900,7 @@ window.onload = () => {
         promiselateinactiveranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    promiselateinactiveranipress.onclick = handleLateInactiveRaniPromisePress;
-    promiselateinactiveranipress.addEventListener('touchstart', handleLateInactiveRaniPromisePress);
+    bindTap(promiselateinactiveranipress, handleLateInactiveRaniPromisePress);
     const handleLateInactiveRajaPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1843,8 +1908,7 @@ window.onload = () => {
         promiselateinactiverajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    promiselateinactiverajapress.onclick = handleLateInactiveRajaPromisePress;
-    promiselateinactiverajapress.addEventListener('touchstart', handleLateInactiveRajaPromisePress);
+    bindTap(promiselateinactiverajapress, handleLateInactiveRajaPromisePress);
     // NOTE: showCompressionScore() is now called inside handle_performance()
     // so these button handlers no longer need to call it themselves.
     const handleNextLateFast = () => {
@@ -1853,8 +1917,7 @@ window.onload = () => {
         logSession();
         showPromiseScreen();
     };
-    nextlatefastBtn.onclick = handleNextLateFast;
-    nextlatefastBtn.addEventListener('touchstart', handleNextLateFast);
+    bindTap(nextlatefastBtn, handleNextLateFast);
     const handleLateFastRaniPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1862,8 +1925,7 @@ window.onload = () => {
         promiselatefastranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    promiselatefastranipress.onclick = handleLateFastRaniPromisePress;
-    promiselatefastranipress.addEventListener('touchstart', handleLateFastRaniPromisePress);
+    bindTap(promiselatefastranipress, handleLateFastRaniPromisePress);
     const handleLateFastRajaPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1871,16 +1933,14 @@ window.onload = () => {
         promiselatefastrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    promiselatefastrajapress.onclick = handleLateFastRajaPromisePress;
-    promiselatefastrajapress.addEventListener('touchstart', handleLateFastRajaPromisePress);
+    bindTap(promiselatefastrajapress, handleLateFastRajaPromisePress);
     const handleNextLateSlow = () => {
         lateslow.style.display = "none";
         // Post-questionnaire (postq1-7) skipped in this version.
         logSession();
         showPromiseScreen();
     };
-    nextlateslowBtn.onclick = handleNextLateSlow;
-    nextlateslowBtn.addEventListener('touchstart', handleNextLateSlow);
+    bindTap(nextlateslowBtn, handleNextLateSlow);
     const handleLateslowRajaPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1888,8 +1948,7 @@ window.onload = () => {
         promiselateslowrajapress.style.display = "none";
         promisesealedraja.style.display = "flex";
     };
-    promiselateslowrajapress.onclick = handleLateslowRajaPromisePress;
-    promiselateslowrajapress.addEventListener('touchstart', handleLateslowRajaPromisePress);
+    bindTap(promiselateslowrajapress, handleLateslowRajaPromisePress);
     const handleLateslowRaniPromisePress = () => {
         promisejingle.play();
         test.play();
@@ -1897,8 +1956,7 @@ window.onload = () => {
         promiselateslowranipress.style.display = "none";
         promisesealedrani.style.display = "flex";
     };
-    promiselateslowranipress.onclick = handleLateslowRaniPromisePress;
-    promiselateslowranipress.addEventListener('touchstart', handleLateslowRaniPromisePress);
+    bindTap(promiselateslowranipress, handleLateslowRaniPromisePress);
 }; // End of window.onload
 function draw() {
     if (listeningForResponse) {
@@ -1918,6 +1976,7 @@ function draw() {
            logSession();
         }
     }
+    if (currentState !== "play") stopPracticeAudio();
     if (!canvasActive) return;
     if (currentState === "play") {
         play_elapsed = millis() - play_start_time;
@@ -1926,6 +1985,7 @@ function draw() {
             handle_performance();
             return;
         }
+        runPracticeBackground();
     }
     background("#FFC5B7");
     textAlign(CENTER, CENTER);
@@ -2402,6 +2462,7 @@ function reset() {
     bpm = 0;
     bpmSum = 0;
     bpmSampleCount = 0;
+    lastBgBeat = -1;
     lastTouchTime = 0;
     lastTouchElapsed = 0;
     pressed_time = 0;
@@ -2455,4 +2516,3 @@ function touchStarted(event) {
     mousePressed();
     return false;
 }
-
