@@ -1559,3 +1559,32 @@ left: 5vw; }
   background: #F25C3B;
   color: #fff;
 }
+
+
+/* ========================================
+   ASSIGN-A-CASE POPUPS
+   "Random case / Assign a case" uses the standard modal styles.
+   The scenario list is a tall card of full-width buttons.
+   ======================================== */
+.scenarioCard {
+  max-height: 90vh;
+  max-height: 90dvh;
+  overflow-y: auto;
+}
+
+.scenarioHeading {
+  text-align: center;
+}
+
+.scenarioButtons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scenarioBtn {
+  flex: none;
+  text-align: left;
+  padding: 18px 18px;
+  line-height: 1.3;
+}
