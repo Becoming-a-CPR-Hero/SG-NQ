@@ -4,7 +4,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.5/lib/p5.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/addons/p5.sound.min.js"></script>
-    <link rel="stylesheet" type="text/css" href="style.css?v=11">
+    <link rel="stylesheet" type="text/css" href="style.css?v=12">
     <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="preload" as="image" href="gasping.gif">
     <meta charset="utf-8" />
@@ -1171,6 +1171,30 @@ per minute.</div>
       </div>
     </div>
 
+    <div class="modalOverlay" id="caseTypeModal" style="display:none;">
+      <div class="modalCard">
+        <div class="modalHeading">Would you like to take a</div>
+        <div class="modalButtons">
+          <div class="modalButton" id="randomCaseBtn">Random case</div>
+          <div class="modalButton" id="assignCaseBtn">Assign a case</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modalOverlay" id="scenarioModal" style="display:none;">
+      <div class="modalCard scenarioCard">
+        <div class="modalHeading scenarioHeading">Choose a scenario</div>
+        <div class="scenarioButtons">
+          <div class="modalButton scenarioBtn" data-scenario="normalNoResponse">The victim is breathing normally but not responding</div>
+          <div class="modalButton scenarioBtn" data-scenario="willRespond">The victim was unconscious but will respond</div>
+          <div class="modalButton scenarioBtn" data-scenario="notBreathing">The victim is unconscious and not breathing</div>
+          <div class="modalButton scenarioBtn" data-scenario="abnormalBreathing">The victim is unconscious but breathing abnormally</div>
+          <div class="modalButton scenarioBtn" data-scenario="unconsciousNormal">The victim is unconscious but breathing normally</div>
+          <div class="modalButton scenarioBtn" data-scenario="unsafe">The victim is unconscious in an unsafe environment</div>
+        </div>
+      </div>
+    </div>
+
     <div class="modalOverlay" id="bpmChoiceModal" style="display:none;">
       <div class="modalCard">
         <div class="modalHeading">Would you like BPM feedback while you compress?</div>
@@ -1222,6 +1246,6 @@ per minute.</div>
 
     <main>
     </main>
-    <script src="sketch.js?v=11"></script>
+    <script src="sketch.js?v=12"></script>
   </body>
 </html>
