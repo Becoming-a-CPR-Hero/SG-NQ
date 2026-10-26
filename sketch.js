@@ -141,6 +141,31 @@ let postQ7Photo = null;
 let photoBase64 = "";
 const DEBOUNCE_TIME = 300; // milliseconds
 let genderState = null;   // 1 = Raja, 0 = Rani
+// ========================================
+// ASSIGNED CASES
+// "Take a new case" can now ask for a random case (the normal flow) or
+// an assigned one chosen from the scenario popup. An assigned case fixes
+// the two things the app simulates:
+//   breath   - what the breathing check shows ("none" | "abnormal" | "normal")
+//   responds - whether the victim responds when the learner checks for response
+// The learner still answers the danger question and does every check
+// themselves, exactly as in the random flow. null = random case.
+// ========================================
+const SCENARIOS = {
+    normalNoResponse:  { breath: "normal",   responds: false },  // breathing normally but not responding
+    willRespond:       { breath: "none",     responds: true  },  // was unconscious but will respond
+    notBreathing:      { breath: "none",     responds: false },  // unconscious and not breathing
+    abnormalBreathing: { breath: "abnormal", responds: false },  // unconscious but breathing abnormally
+    unconsciousNormal: { breath: "normal",   responds: false },  // unconscious but breathing normally
+    unsafe:            { breath: "none",     responds: false }   // unconscious in an unsafe environment
+};
+let assignedScenario = null;
+
+// Whether a shout into the microphone can wake the victim in this case.
+function victimCanRespond() {
+    return !assignedScenario || SCENARIOS[assignedScenario].responds;
+}
+
 let mic;
 let listeningForResponse = false;
 let responseTimeout = null;
@@ -1336,6 +1361,12 @@ window.onload = () => {
         checkresponse.style.display = "flex";
         listeningForResponse = true;
         responseTimeout = setTimeout(() => {
+            // Assigned case where the victim will respond: they do, even if
+            // the learner stayed quiet, so the case plays out as assigned.
+            if (assignedScenario && SCENARIOS[assignedScenario].responds) {
+                victimResponds();
+                return;
+            }
             listeningForResponse = false;
             checkresponse.style.display = "none";
             checkresponseq.style.display = "flex";
@@ -1361,6 +1392,12 @@ window.onload = () => {
         checkresponse.style.display = "flex";
         listeningForResponse = true;
         responseTimeout = setTimeout(() => {
+            // Assigned case where the victim will respond: they do, even if
+            // the learner stayed quiet, so the case plays out as assigned.
+            if (assignedScenario && SCENARIOS[assignedScenario].responds) {
+                victimResponds();
+                return;
+            }
             listeningForResponse = false;
             checkresponse.style.display = "none";
             checkresponseq.style.display = "flex";
@@ -1713,7 +1750,19 @@ window.onload = () => {
     // underneath the modal, since the buttons that open the modal no
     // longer hide it themselves (that used to leave the body's plain
     // white/no background showing through the translucent overlay).
-    const handleNewCase = () => {
+    // "Take a new case" now asks first: random case (the normal flow) or
+    // assign a case (pick the scenario from a list).
+    const caseTypeModal = document.getElementById("caseTypeModal");
+    const randomCaseBtn = document.getElementById("randomCaseBtn");
+    const assignCaseBtn = document.getElementById("assignCaseBtn");
+    const scenarioModal = document.getElementById("scenarioModal");
+    const scenarioBtns = document.querySelectorAll(".scenarioBtn");
+
+    // scenarioKey: null for a random case, otherwise a key of SCENARIOS.
+    const startNewCase = (scenarioKey) => {
+        assignedScenario = scenarioKey;
+        caseTypeModal.style.display = "none";
+        scenarioModal.style.display = "none";
         practiceChoiceModal.style.display = "none";
         promisesealedraja.style.display = "none";
         promisesealedrani.style.display = "none";
@@ -1721,13 +1770,25 @@ window.onload = () => {
         bpmFeedbackEnabled = true; // full scenarios always show BPM feedback by default
         practiceBgMode = "none";   // full scenarios start with no background
         syncBgChips();
-        reset();
+        reset();                   // reads assignedScenario to set the breathing state
         dialDisplay.textContent = "995";
         dialDisplay.classList.add("empty");
         callBtn.disabled = true;
         callBtn.style.opacity = 0.5;
     };
+
+    const handleNewCase = () => {
+        practiceChoiceModal.style.display = "none";
+        caseTypeModal.style.display = "flex";
+    };
     bindTap(newCaseBtn, handleNewCase);
+
+    bindTap(randomCaseBtn, () => startNewCase(null));
+    bindTap(assignCaseBtn, () => {
+        caseTypeModal.style.display = "none";
+        scenarioModal.style.display = "flex";
+    });
+    scenarioBtns.forEach(btn => bindTap(btn, () => startNewCase(btn.dataset.scenario)));
 
     // "Only compressions" no longer jumps straight in — it now asks
     // whether the learner wants BPM feedback visible during the drill.
@@ -1742,6 +1803,7 @@ window.onload = () => {
     // whether the meter/number/arrow are drawn on the play screen.
     const startOnlyCompressions = (withBpm) => {
         bpmFeedbackEnabled = withBpm;
+        assignedScenario = null;
         bpmChoiceModal.style.display = "none";
         promisesealedraja.style.display = "none";
         promisesealedrani.style.display = "none";
@@ -1958,22 +2020,28 @@ window.onload = () => {
     };
     bindTap(promiselateslowranipress, handleLateslowRaniPromisePress);
 }; // End of window.onload
+function victimResponds() {
+    listeningForResponse = false;
+    clearTimeout(responseTimeout);
+    responseTimeout = null;
+    document.dispatchEvent(new Event("voiceDetected"));
+    checkresponse.style.display = "none";
+    awake.style.display = "flex";
+    respondedaud.play();
+    checkrAudio.pause();
+    checkrAudio.currentTime = 0;
+    logSession();
+}
+
 function draw() {
     if (listeningForResponse) {
         let vol = mic.getLevel();
         console.log("Volume:", vol);
-        if (vol > 0.3) {
+        // In an assigned case where the victim does not respond, shouting
+        // must not wake them.
+        if (vol > 0.3 && victimCanRespond()) {
             console.log("hi");
-            listeningForResponse = false;
-            clearTimeout(responseTimeout);
-            responseTimeout = null;
-            document.dispatchEvent(new Event("voiceDetected"));
-            checkresponse.style.display = "none";
-            awake.style.display = "flex";
-            respondedaud.play();
-            checkrAudio.pause();
-            checkrAudio.currentTime = 0;
-           logSession();
+            victimResponds();
         }
     }
     if (currentState !== "play") stopPracticeAudio();
@@ -2477,7 +2545,7 @@ function reset() {
     diffGoal = 0;
     play_elapsed = 0;
     scoreLoggedForAttempt = false;
-    breathScenario = nextBreathScenario();
+    breathScenario = assignedScenario ? SCENARIOS[assignedScenario].breath : nextBreathScenario();
     dialedNumber = '';
     maxTotalCompressions = floor(random(30, 50));
     task_time = 600 * maxTotalCompressions + 3000;
